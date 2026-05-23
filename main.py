@@ -25,12 +25,12 @@ bot = Client(
     bot_token=BOT_TOKEN
 )
 
-# Keep-alive для бесплатных хостингов
+# Keep-alive
 async def keep_alive():
     while True:
         try:
-            await asyncio.sleep(300)  # каждые 5 минут
-            await bot.send_message(OWNER_ID, "🟢 Userbot работает...")
+            await asyncio.sleep(300)
+            await bot.send_message(OWNER_ID, "🟢 Userbot всё ещё работает...")
         except:
             pass
 
@@ -46,7 +46,7 @@ async def send_msg(_, message: Message):
         chat_id = args[1]
         text = args[2]
         
-        await asyncio.sleep(random.uniform(1.5, 3.5))  # человеческая задержка
+        await asyncio.sleep(random.uniform(1.5, 3.5))
         await user.send_message(chat_id, text)
         await message.reply(f"✅ Отправлено → `{chat_id}`")
     except Exception as e:
@@ -103,16 +103,11 @@ async def help_cmd(_, message: Message):
 
 
 # ===================== ЗАПУСК =====================
-async def main():
-    print("🚀 Запуск Userbot + Control Bot...")
-    await user.start()
-    await bot.start()
-    print("✅ Бот успешно запущен!")
-    
-    # Keep-alive
-    asyncio.create_task(keep_alive())
-    
-    await asyncio.Future()  # бесконечный запуск
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    print("🚀 Запуск Userbot + Control Bot...")
+
+    # Запускаем user клиента
+    user.start()
+    
+    # Запускаем control бота
+    bot.run()   # Это самый стабильный способ на Render
