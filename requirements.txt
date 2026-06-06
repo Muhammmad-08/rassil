@@ -1,2 +1,4 @@
+aiogram==3.7.0
 pyrogram==2.0.106
 TgCrypto==1.2.5
+apscheduler==3.10.4
