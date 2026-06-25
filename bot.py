@@ -38,13 +38,13 @@ class SpammerStates(StatesGroup):
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Мои чаты", callback_data="show_chats")],
-        [InlineKeyboardButton(text="🚀 Запустить бесконечную рассылку", callback_data="start_spam")],
+        [InlineKeyboardButton(text="🚀 Запустить рассылку", callback_data="start_spam")],
         [InlineKeyboardButton(text="🛑 Остановить рассылку", callback_data="stop_bot")]
     ])
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("🤖 **Бесконечный Spammer Bot**\n\nГотов к работе.", reply_markup=main_menu())
+    await message.answer("🤖 **Бесконечный Spammer Bot**", reply_markup=main_menu())
 
 @dp.message(Command("upload_session"))
 async def upload_session(message: types.Message):
@@ -107,18 +107,13 @@ async def start_spam(callback: types.CallbackQuery, state: FSMContext):
     if not selected_chats:
         return await callback.answer("Выберите хотя бы один чат!", show_alert=True)
     
-    await callback.message.edit_text("✍️ Введите текст для **повторяющейся** рассылки:")
+    await callback.message.edit_text("✍️ Введите текст для бесконечной рассылки:")
     await state.set_state(SpammerStates.waiting_for_text)
 
 @dp.message(SpammerStates.waiting_for_text)
 async def process_text(message: types.Message, state: FSMContext):
     await state.update_data(spam_text=message.text)
-    
-    if len(selected_chats) == 1:
-        await message.answer("⏱ Введите интервал отправки (в секундах). Пример: 60 = 1 минута")
-    else:
-        await message.answer("⏱ Введите интервал **между чатами** (в секундах). Пример: 10")
-    
+    await message.answer("⏱ Введите интервал отправки в секундах (например: 10 = каждые 10 секунд):")
     await state.set_state(SpammerStates.waiting_for_interval)
 
 @dp.message(SpammerStates.waiting_for_interval)
@@ -128,14 +123,13 @@ async def process_interval(message: types.Message, state: FSMContext):
         interval = int(message.text)
         if interval < 1:
             interval = 5
-            
+
         data = await state.get_data()
         text = data.get('spam_text')
         
         await state.clear()
-        await message.answer(f"🚀 **Бесконечная рассылка запущена!**\nТекст: {text[:100]}...\nИнтервал: {interval} сек\nЧатов: {len(selected_chats)}")
-        
-        # Запускаем цикл
+        await message.answer(f"🚀 **Рассылка запущена**\nИнтервал: {interval} сек\nЧатов: {len(selected_chats)}")
+
         current_spam_task = asyncio.create_task(infinite_spam(message, text, interval))
         spam_task_running = True
         
@@ -146,31 +140,35 @@ async def infinite_spam(message: types.Message, text: str, interval: int):
     global spam_task_running
     while spam_task_running and current_client:
         for chat_id in selected_chats[:]:
+            if not spam_task_running:
+                break
             try:
                 await current_client.send_message(chat_id, text)
-                await message.answer(f"✅ Отправлено в {chat_id}")
+                await message.answer(f"✅ Отправлено → {chat_id}")
             except FloodWait as e:
                 await asyncio.sleep(e.value)
             except Exception as e:
-                await message.answer(f"❌ Ошибка {chat_id}: {str(e)[:80]}")
+                await message.answer(f"❌ Ошибка {chat_id}: {str(e)[:100]}")
             
-            await asyncio.sleep(interval)   # интервал между сообщениями / чатами
+            await asyncio.sleep(interval)  # ← Главный интервал
 
-        # Если один чат — тоже ждём интервал перед следующим кругом
-        if len(selected_chats) == 1:
-            await asyncio.sleep(interval)
+@dp.message(Command("stop"))
+async def stop_command(message: types.Message):
+    await stop_spam()
+    await message.answer("🛑 Рассылка остановлена по команде /stop", reply_markup=main_menu())
 
 async def stop_spam():
     global spam_task_running, current_spam_task
     spam_task_running = False
     if current_spam_task:
         current_spam_task.cancel()
+        current_spam_task = None
 
 @dp.callback_query(F.data == "stop_bot")
 async def stop_bot(callback: types.CallbackQuery):
     await stop_spam()
-    await callback.answer("✅ Рассылка остановлена", show_alert=True)
-    await callback.message.edit_text("🛑 Рассылка остановлена.", reply_markup=main_menu())
+    await callback.answer("Рассылка остановлена", show_alert=True)
+    await callback.message.edit_text("🛑 Рассылка остановлена.\n\nМеню:", reply_markup=main_menu())
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_menu(callback: types.CallbackQuery):
