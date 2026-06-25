@@ -8,7 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram import Client
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, UserIsBlocked, ChatWriteForbidden
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,16 +26,14 @@ bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-current_client = None
-selected_chats = []   # список выбранных chat_id
-all_dialogs = []      # кэш всех диалогов
+current_client: Client = None
+selected_chats = []
+all_dialogs = []
 
-# ==================== СОСТОЯНИЯ ====================
 class SpammerStates(StatesGroup):
     waiting_for_text = State()
     waiting_for_interval = State()
 
-# ==================== КЛАВИАТУРЫ ====================
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Мои чаты", callback_data="show_chats")],
@@ -43,25 +41,19 @@ def main_menu():
         [InlineKeyboardButton(text="🛑 Остановить", callback_data="stop_bot")]
     ])
 
-# ==================== ХЕНДЛЕРЫ ====================
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer(
-        "🤖 **Pyrogram Spammer Bot**\n\n"
-        "Загрузи .session файл командой /upload_session\n"
-        "Или используй меню ниже 👇",
-        reply_markup=main_menu()
-    )
+    await message.answer("🤖 **Pyrogram Spammer Bot** готов к работе", reply_markup=main_menu())
 
 @dp.message(Command("upload_session"))
 async def upload_session(message: types.Message):
-    await message.answer("📤 Отправь мне `.session` файл Pyrogram")
+    await message.answer("📤 Отправь .session файл")
 
 @dp.message(F.document)
 async def handle_session(message: types.Message):
     global current_client
     if not message.document.file_name.endswith('.session'):
-        return await message.answer("❌ Нужен файл с расширением `.session`")
+        return await message.answer("❌ Нужен .session файл")
 
     file_path = os.path.join(SESSIONS_DIR, "user.session")
     file = await bot.get_file(message.document.file_id)
@@ -78,10 +70,9 @@ async def handle_session(message: types.Message):
         )
         await current_client.start()
         me = await current_client.get_me()
-        await message.answer(f"✅ Успешно авторизовались как {me.first_name} (@{me.username})", 
-                           reply_markup=main_menu())
+        await message.answer(f"✅ Авторизация успешна: {me.first_name}", reply_markup=main_menu())
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
+        await message.answer(f"❌ Ошибка подключения: {e}")
 
 @dp.callback_query(F.data == "show_chats")
 async def show_chats(callback: types.CallbackQuery):
@@ -89,27 +80,26 @@ async def show_chats(callback: types.CallbackQuery):
     if not current_client:
         return await callback.answer("Сначала загрузи сессию!", show_alert=True)
 
-    await callback.message.edit_text("⏳ Загружаю список чатов...")
+    await callback.message.edit_text("⏳ Загружаю чаты...")
 
     all_dialogs.clear()
     keyboard = []
-
-    async for dialog in current_client.get_dialogs(limit=40):
+    async for dialog in current_client.get_dialogs(limit=50):
         chat = dialog.chat
         chat_id = chat.id
-        title = chat.title or chat.first_name or "Private Chat"
+        title = (chat.title or chat.first_name or "Личный чат")[:40]
         all_dialogs.append((chat_id, title))
         
+        status = "✅ " if chat_id in selected_chats else ""
         keyboard.append([InlineKeyboardButton(
-            text=f"{'✅' if chat_id in selected_chats else ''} {title[:35]}",
+            text=f"{status}{title}",
             callback_data=f"select_{chat_id}"
         )])
 
     keyboard.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")])
 
     await callback.message.edit_text(
-        f"📋 Выберите чаты (нажмите для выбора/снятия):\n\n"
-        f"Выбрано: {len(selected_chats)}",
+        f"📋 Выберите чаты для рассылки\nВыбрано: **{len(selected_chats)}**",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
 
@@ -117,14 +107,13 @@ async def show_chats(callback: types.CallbackQuery):
 async def select_chat(callback: types.CallbackQuery):
     global selected_chats
     chat_id = int(callback.data.split("_")[1])
-
+    
     if chat_id in selected_chats:
         selected_chats.remove(chat_id)
     else:
         selected_chats.append(chat_id)
-
-    # Обновляем список
-    await show_chats(callback)
+    
+    await show_chats(callback)  # обновляем список
 
 @dp.callback_query(F.data == "start_spam")
 async def start_spam(callback: types.CallbackQuery, state: FSMContext):
@@ -132,14 +121,14 @@ async def start_spam(callback: types.CallbackQuery, state: FSMContext):
         return await callback.answer("Выберите хотя бы один чат!", show_alert=True)
     
     await callback.message.edit_text(
-        f"✍️ Отправьте текст, который хотите разослать в {len(selected_chats)} чатов:"
+        f"✍️ Отправьте текст для рассылки в **{len(selected_chats)}** чатов:"
     )
     await state.set_state(SpammerStates.waiting_for_text)
 
 @dp.message(SpammerStates.waiting_for_text)
 async def process_text(message: types.Message, state: FSMContext):
-    await state.update_data(spam_text=message.text)
-    await message.answer("⏱ Введите интервал между сообщениями в секундах (минимум 5 рекомендуется):")
+    await state.update_data(spam_text=message.html_text)  # сохраняем с HTML
+    await message.answer("⏱ Введите интервал между сообщениями в секундах (рекомендую 10+):")
     await state.set_state(SpammerStates.waiting_for_interval)
 
 @dp.message(SpammerStates.waiting_for_interval)
@@ -147,40 +136,53 @@ async def process_interval(message: types.Message, state: FSMContext):
     try:
         interval = int(message.text)
         if interval < 1:
-            raise ValueError
+            interval = 5
         data = await state.get_data()
-        text = data['spam_text']
+        text = data.get('spam_text')
         
-        await message.answer(f"🚀 **Запуск рассылки**\nЧатов: {len(selected_chats)}\nИнтервал: {interval} сек")
+        await message.answer(f"🚀 **Рассылка запущена!**\nЧатов: {len(selected_chats)}\nИнтервал: {interval} сек")
         await state.clear()
-        asyncio.create_task(do_spam(message, text, interval))
+        
+        # Запускаем рассылку
+        asyncio.create_task(spam_task(message, text, interval))
+        
     except:
-        await message.answer("❌ Пожалуйста, введите число.")
+        await message.answer("❌ Введите число секунд.")
 
-async def do_spam(message: types.Message, text: str, interval: int):
+async def spam_task(message: types.Message, text: str, interval: int):
+    """Отдельная задача для рассылки"""
     global current_client
+    if not current_client:
+        await message.answer("❌ Сессия потеряна")
+        return
+
     sent = 0
-    for chat_id in selected_chats[:]:
+    total = len(selected_chats)
+    
+    for i, chat_id in enumerate(selected_chats[:], 1):   # копия списка
         try:
-            await current_client.send_message(chat_id, text)
+            await current_client.send_message(chat_id, text, parse_mode="HTML")
             sent += 1
-            await message.answer(f"✅ {sent}/{len(selected_chats)} → {chat_id}")
-            await asyncio.sleep(interval)
+            await message.answer(f"✅ {i}/{total} | Отправлено в {chat_id}")
         except FloodWait as e:
-            await asyncio.sleep(e.value + 1)
+            await message.answer(f"⏳ FloodWait {e.value} сек...")
+            await asyncio.sleep(e.value)
+        except (UserIsBlocked, ChatWriteForbidden):
+            await message.answer(f"❌ Чат {chat_id} заблокировал бота")
         except Exception as e:
-            await message.answer(f"❌ Ошибка {chat_id}: {e}")
-            await asyncio.sleep(3)
-    await message.answer(f"✅ **Рассылка завершена!**\nОтправлено: {sent}/{len(selected_chats)}")
+            await message.answer(f"❌ Ошибка в {chat_id}: {str(e)[:100]}")
+        await asyncio.sleep(interval)
+
+    await message.answer(f"🎉 **Рассылка завершена!**\nОтправлено: {sent}/{total}", reply_markup=main_menu())
 
 @dp.callback_query(F.data == "stop_bot")
 async def stop_bot(callback: types.CallbackQuery):
-    await callback.answer("Остановлено")
-    await callback.message.edit_text("🛑 Рассылка остановлена.\n\nИспользуйте меню:", reply_markup=main_menu())
+    await callback.answer("Рассылка остановлена", show_alert=True)
+    await callback.message.edit_text("🛑 Остановлено", reply_markup=main_menu())
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_menu(callback: types.CallbackQuery):
-    await callback.message.edit_text("Главное меню:", reply_markup=main_menu())
+    await callback.message.edit_text("Главное меню", reply_markup=main_menu())
 
 async def main():
     await dp.start_polling(bot)
