@@ -27,7 +27,7 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # ====================== ПРИВАТНОСТЬ ======================
-ALLOWED_USERS = [YOUR_ID_HERE]   # ←←← Замени на свой Telegram ID
+ALLOWED_USERS = [8237163079]   # ←←← Замени на свой Telegram ID
 
 def is_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_USERS
