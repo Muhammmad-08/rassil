@@ -27,16 +27,16 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # ====================== ПРИВАТНОСТЬ ======================
-ALLOWED_USERS = [8237163079]   # ←←← СЮДА ВСТАВЬ СВОЙ TELEGRAM ID
+ALLOWED_USERS = [YOUR_ID_HERE]   # ←←← Замени на свой Telegram ID
 
 def is_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_USERS
 
-# ====================== ОСТАЛЬНОЕ ======================
+# ====================== ДАННЫЕ ======================
 clients = {}
 current_account = None
-selected_chats = []
-custom_chats = {}   # {name: link}
+selected_chats = []      # [(chat_id или link, name), ...]
+custom_chats = {}        # {name: link}
 
 class SpammerStates(StatesGroup):
     waiting_for_text = State()
@@ -54,33 +54,35 @@ def main_menu():
     ])
 
 # ====================== ЗАЩИТА ======================
-@dp.message()
-async def check_access(message: types.Message):
-    if not is_allowed(message.from_user.id):
-        return await message.answer("⛔ У вас нет доступа к этому боту.")
-    # Если доступ есть — продолжаем обработку дальше
+async def check_access(event: types.Message | types.CallbackQuery):
+    user_id = event.from_user.id
+    if not is_allowed(user_id):
+        if isinstance(event, types.Message):
+            await event.answer("⛔ У вас нет доступа к этому боту.")
+        else:
+            await event.answer("⛔ Доступ запрещён", show_alert=True)
+        return False
+    return True
 
 # ====================== КОМАНДЫ ======================
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    if not is_allowed(message.from_user.id):
-        return
-    await message.answer("🤖 **Приватный Spammer Bot**\n\nДоступ разрешён.", reply_markup=main_menu())
+    if not await check_access(message): return
+    await message.answer("🤖 **Приватный Spammer Bot**\nДоступ разрешён ✅", reply_markup=main_menu())
 
 @dp.message(Command("myid"))
 async def get_my_id(message: types.Message):
     await message.answer(f"🆔 Ваш ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
 
-# ====================== СЕССИИ ======================
+# ====================== ЗАГРУЗКА СЕССИИ ======================
 @dp.message(Command("upload_session"))
 async def upload_session(message: types.Message):
-    if not is_allowed(message.from_user.id): return
+    if not await check_access(message): return
     await message.answer("📤 Отправь .session файл")
 
 @dp.message(F.document)
 async def handle_session(message: types.Message):
-    if not is_allowed(message.from_user.id): return
-    # ... (код загрузки сессии без изменений) ...
+    if not await check_access(message): return
     global current_account
     if not message.document.file_name.endswith('.session'):
         return await message.answer("❌ Нужен .session файл")
@@ -100,33 +102,77 @@ async def handle_session(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-# Остальные хендлеры (show_chats, add_link, рассылка и т.д.) тоже нужно защитить
+# ====================== ДОБАВЛЕНИЕ ПО ССЫЛКЕ ======================
+@dp.callback_query(F.data == "add_link")
+async def add_link(callback: types.CallbackQuery, state: FSMContext):
+    if not await check_access(callback): return
+    await callback.message.edit_text("🔗 Отправь ссылку на чат или группу:")
+    await state.set_state(SpammerStates.waiting_for_link)
 
-# Для удобства можно добавить декоратор, но чтобы не усложнять — просто добавь проверку в каждый важный хендлер.
+@dp.message(SpammerStates.waiting_for_link)
+async def process_link(message: types.Message, state: FSMContext):
+    if not await check_access(message): return
+    await state.update_data(link=message.text.strip())
+    await message.answer("Как назвать этот чат?")
+    await state.set_state(SpammerStates.waiting_for_name)
 
-# ====================== ПРИМЕР ЗАЩИТЫ ДЛЯ ОДНОГО ХЕНДЛЕРА ======================
+@dp.message(SpammerStates.waiting_for_name)
+async def save_custom_chat(message: types.Message, state: FSMContext):
+    if not await check_access(message): return
+    name = message.text.strip()
+    data = await state.get_data()
+    custom_chats[name] = data['link']
+    await message.answer(f"✅ Сохранено:\n{name}", reply_markup=main_menu())
+    await state.clear()
+
+# ====================== СПИСОК ЧАТОВ ======================
 @dp.callback_query(F.data == "show_chats")
 async def show_chats(callback: types.CallbackQuery):
-    if not is_allowed(callback.from_user.id):
-        return await callback.answer("Доступ запрещён", show_alert=True)
-    # ... остальной код show_chats ...
+    if not await check_access(callback): return
+    if not current_account:
+        return await callback.answer("Сначала выберите аккаунт!", show_alert=True)
 
-# То же самое нужно добавить во все callback_query и message хендлеры.
+    await callback.message.edit_text("⏳ Загружаю чаты...")
 
-# Чтобы не писать везде вручную, вот **лучший способ**:
+    try:
+        client = clients[current_account]
+        keyboard = []
 
-# Замени начало файла на это:
+        # Личные чаты
+        keyboard.append([InlineKeyboardButton(text="👤 ЛИЧНЫЕ ЧАТЫ", callback_data="dummy")])
+        async for dialog in client.get_dialogs(limit=15):
+            chat = dialog.chat
+            if chat.type == "private":
+                status = "✅ " if any(x[0] == chat.id for x in selected_chats) else ""
+                keyboard.append([InlineKeyboardButton(text=f"{status}{chat.first_name}", callback_data=f"select_{chat.id}")])
 
-# ====================== УЛУЧШЕННАЯ ЗАЩИТА (рекомендую) ======================
-async def is_allowed_middleware(message: types.Message | types.CallbackQuery):
-    user_id = message.from_user.id if isinstance(message, types.Message) else message.from_user.id
-    if not is_allowed(user_id):
-        if isinstance(message, types.Message):
-            await message.answer("⛔ У вас нет доступа к этому боту.")
-        else:
-            await message.answer("⛔ Доступ запрещён", show_alert=True)
-        return False
-    return True
+        # Групповые
+        keyboard.append([InlineKeyboardButton(text="👥 ГРУППЫ И КАНАЛЫ", callback_data="dummy")])
+        async for dialog in client.get_dialogs(limit=15):
+            chat = dialog.chat
+            if chat.type in ["group", "supergroup", "channel"]:
+                status = "✅ " if any(x[0] == chat.id for x in selected_chats) else ""
+                keyboard.append([InlineKeyboardButton(text=f"{status}{chat.title[:30]}", callback_data=f"select_{chat.id}")])
 
-# Потом в каждом хендлере в начале добавляй:
-# if not await is_allowed_middleware(message): return
+        # Сохранённые по ссылке
+        if custom_chats:
+            keyboard.append([InlineKeyboardButton(text="🔗 СОХРАНЁННЫЕ", callback_data="dummy")])
+            for name in custom_chats:
+                status = "✅ " if any(x[1] == name for x in selected_chats) else ""
+                keyboard.append([InlineKeyboardButton(text=f"{status}🔗 {name}", callback_data=f"custom_{name}")])
+
+        keyboard.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")])
+
+        await callback.message.edit_text(f"📋 Чаты (выбрано: {len(selected_chats)})", 
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка: {e}", reply_markup=main_menu())
+
+# ... (остальные хендлеры select_chat, start_spam, infinite_spam и stop — оставь как в предыдущей версии)
+
+# ====================== ЗАПУСК ======================
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
