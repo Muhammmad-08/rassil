@@ -15,13 +15,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_TOKEN = os.getenv("BOT_TOKEN")
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
+
+# Очищаем API_ID и API_HASH от возможных случайных кавычек или пробелов
+raw_api_id = os.getenv("API_ID", "").strip().replace('"', '').replace("'", "")
+API_ID = int(raw_api_id) if raw_api_id.isdigit() else None
+API_HASH = os.getenv("API_HASH", "").strip().replace('"', '').replace("'", "")
 
 SESSIONS_DIR = "sessions"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
+
+# Проверка конфигурации перед запуском
+if not API_ID or not API_HASH or not API_TOKEN:
+    logging.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Проверьте переменные окружения BOT_TOKEN, API_ID и API_HASH!")
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -92,9 +99,11 @@ async def process_phone(message: types.Message, state: FSMContext):
     try:
         client = Client(session_name, api_id=API_ID, api_hash=API_HASH, workdir=SESSIONS_DIR)
         await client.connect()
-        await client.send_code(phone)
+        
+        # Отправляем код и сохраняем объект phone_code_hash для авторизации
+        code_info = await client.send_code(phone)
 
-        await state.update_data(client=client, session_name=session_name, phone=phone)
+        await state.update_data(client=client, session_name=session_name, phone=phone, phone_code_hash=code_info.phone_code_hash)
         await message.answer("🔢 Введите код, который пришёл в Telegram или SMS:")
         await state.set_state(AuthStates.waiting_for_code)
     except Exception as e:
@@ -107,9 +116,11 @@ async def process_code(message: types.Message, state: FSMContext):
     data = await state.get_data()
     client = data['client']
     session_name = data['session_name']
+    phone = data['phone']
+    phone_code_hash = data['phone_code_hash']
 
     try:
-        await client.sign_in(data['phone'], message.text.strip())
+        await client.sign_in(phone, phone_code_hash, message.text.strip())
         me = await client.get_me()
         clients[session_name] = client
         global current_account
@@ -160,16 +171,17 @@ async def handle_session(message: types.Message):
     await bot.download_file((await bot.get_file(message.document.file_id)).file_path, file_path)
 
     try:
+        # Используем .connect() вместо .start(), чтобы не ломать event loop бота
         client = Client(session_name, api_id=API_ID, api_hash=API_HASH, workdir=SESSIONS_DIR)
-        await client.start()
+        await client.connect()
         me = await client.get_me()
         clients[session_name] = client
         current_account = session_name
         await message.answer(f"✅ Аккаунт загружен: {me.first_name}", reply_markup=main_menu())
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"❌ Ошибка при инициализации сессии: {e}")
 
-# ====================== ОСТАЛЬНЫЕ ФУНКЦИИ (упрощённые) ======================
+# ====================== УПРАВЛЕНИЕ ЧАТАМИ ======================
 @dp.callback_query(F.data == "show_chats")
 async def show_chats(callback: types.CallbackQuery):
     if not is_allowed(callback.from_user.id): return
@@ -196,7 +208,7 @@ async def show_chats(callback: types.CallbackQuery):
         await callback.message.edit_text(f"📋 Чаты (выбрано: {len(selected_chats)})", 
                                        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     except Exception as e:
-        await callback.message.edit_text(f"❌ Ошибка: {e}", reply_markup=main_menu())
+        await callback.message.edit_text(f"❌ Ошибка получения чатов: {e}", reply_markup=main_menu())
 
 @dp.callback_query(F.data.startswith("select_"))
 async def select_chat(callback: types.CallbackQuery):
@@ -275,7 +287,7 @@ async def infinite_spam(message: types.Message, text: str, interval: int):
             except FloodWait as e:
                 await asyncio.sleep(e.value)
             except Exception as e:
-                await message.answer(f"❌ Ошибка: {str(e)[:100]}")
+                await message.answer(f"❌ Ошибка отправки: {str(e)[:100]}")
             await asyncio.sleep(interval)
 
 # ====================== ОСТАНОВКА ======================
