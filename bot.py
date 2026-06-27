@@ -110,15 +110,19 @@ async def show_chats(callback: types.CallbackQuery):
         client = clients[current_account]
         keyboard = []
         
-        async for dialog in client.get_dialogs(limit=20):
+        async for dialog in client.get_dialogs(limit=25):
             chat = dialog.chat
             
-            if chat.is_forum:
+            # Безопасная проверка флага форума (is_forum)
+            is_forum_chat = getattr(chat, "is_forum", False)
+            
+            if is_forum_chat:
                 try:
+                    # Пробуем получить темы форума
                     async for forum_topic in client.get_forum_topics(chat.id, limit=15):
                         topic_id = forum_topic.id
                         topic_title = forum_topic.title
-                        display_name = f"💬 {chat.title[:15]} -> {topic_title[:15]}"
+                        display_name = f"💬 {chat.title[:12]} -> {topic_title[:15]}"
                         
                         status = "✅ " if any(x[0] == chat.id and x[1] == topic_id for x in selected_chats) else ""
                         
@@ -127,8 +131,10 @@ async def show_chats(callback: types.CallbackQuery):
                             callback_data=f"top_{chat.id}_{topic_id}"
                         )])
                 except Exception:
-                    pass
-            else:
+                    # Если упало на чтении тем, выведем группу как обычную
+                    is_forum_chat = False
+
+            if not is_forum_chat:
                 title = chat.title or chat.first_name or "Чат"
                 display_name = f"👤 {title[:30]}"
                 status = "✅ " if any(x[0] == chat.id and x[1] is None for x in selected_chats) else ""
@@ -171,7 +177,7 @@ async def select_forum_topic(callback: types.CallbackQuery):
         await callback.answer("✅ Тема добавлена")
     else:
         selected_chats.remove(existing[0])
-        await callback.answer("❌ Тема убрана")
+        await callback.answer("❌ Тема убран")
     await show_chats(callback)
 
 # ====================== РАССЫЛКА И ТАЙМЕРЫ ======================
@@ -198,15 +204,13 @@ async def process_msg_interval(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id): return
     global current_spam_task, spam_task_running
     try:
-        msg_int = max(int(message.text), 1)  # Минимум 1 секунда
+        msg_int = max(int(message.text), 1)
         await state.update_data(msg_interval=msg_int)
         
-        # Если выбрано 2 или более чатов, просим вторую паузу
         if len(selected_chats) >= 2:
             await message.answer("🔄 **Интервал 2:** Пауза *между кругами* рассылки (после обхода всех чатов, в секундах):")
             await state.set_state(SpammerStates.waiting_for_loop_interval)
         else:
-            # Если выбран всего 1 чат, то пауза между кругами не нужна, сразу запускаем
             data = await state.get_data()
             text = data['spam_text']
             await state.clear()
@@ -263,18 +267,15 @@ async def infinite_spam(message: types.Message, text: str, msg_interval: int, lo
             except Exception as e:
                 await message.answer(f"❌ Ошибка в {name}: {str(e)[:60]}")
             
-            # Делаем паузу между чатами, кроме самого последнего чата в списке (после него будет пауза между кругами)
             if index < len(selected_chats) - 1:
                 await asyncio.sleep(msg_interval)
             
         if not spam_task_running: break
         
-        # Если выбрано больше 1 чата и задана пауза между кругами
         if len(selected_chats) >= 2 and loop_interval > 0:
             await message.answer(f"💤 Все чаты пройдены. Пауза перед новым кругом {loop_interval} сек.")
             await asyncio.sleep(loop_interval)
         else:
-            # Если чат один, то он просто ждет заданный интервал и шлет снова
             await asyncio.sleep(msg_interval)
 
 # ====================== ОСТАНОВКА И НАВИГАЦИЯ ======================
