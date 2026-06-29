@@ -57,13 +57,23 @@ class SpammerStates(StatesGroup):
     waiting_for_pm_loop_interval = State()
 
 def main_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📁 Загрузить .session", callback_data="upload_session")],
+    # Проверяем, загружен ли сейчас аккаунт, чтобы динамически менять текст
+    account_status = f" Аккаунт: {current_account}" if current_account else "📁 Загрузить .session"
+    
+    buttons = [
+        [InlineKeyboardButton(text=account_status, callback_data="upload_session")],
         [InlineKeyboardButton(text="👥 Выбрать Группы/Темы", callback_data="show_chats")],
         [InlineKeyboardButton(text="👤 Рассылка по Юзерам (ЛС)", callback_data="menu_users")],
-        [InlineKeyboardButton(text="🚀 Запустить рассылку в чаты", callback_data="start_spam")],
-        [InlineKeyboardButton(text="🛑 Остановить всё", callback_data="stop_bot")]
-    ])
+        [InlineKeyboardButton(text="🚀 Запустить рассылку в чаты", callback_data="start_spam")]
+    ]
+    
+    # Если аккаунт загружен, показываем кнопку для его удаления/выхода
+    if current_account:
+        buttons.append([InlineKeyboardButton(text="❌ Завершить (удалить) сессию", callback_data="delete_session")])
+        
+    buttons.append([InlineKeyboardButton(text="🛑 Остановить всё", callback_data="stop_bot")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # ====================== СТАРТ ======================
 @dp.message(Command("start"))
@@ -97,6 +107,50 @@ async def handle_session(message: types.Message):
         await message.answer(f"✅ Аккаунт успешно загружен: {me.first_name}", reply_markup=main_menu())
     except Exception as e:
         await message.answer(f"❌ Ошибка инициализации сессии: {e}")
+
+# ====================== УДАЛЕНИЕ / ВЫХОД ИЗ СЕССИИ ======================
+@dp.callback_query(F.data == "delete_session")
+async def delete_session_handler(callback: types.CallbackQuery):
+    if not is_allowed(callback.from_user.id): return
+    global current_account, spam_task_running, current_spam_task
+    
+    if not current_account:
+        return await callback.answer("Нет активной сессии для удаления!", show_alert=True)
+    
+    await callback.message.edit_text("⏳ Завершаем сессию в Telegram и удаляем файл...")
+    
+    # 1. Сначала принудительно останавливаем спам, если он запущен
+    spam_task_running = False
+    if current_spam_task:
+        current_spam_task.cancel()
+        current_spam_task = None
+        
+    try:
+        client = clients[current_account]
+        
+        # 2. Вызываем логаут. Telegram аннулирует сессию, а Pyrogram сотрет .session файл
+        await client.log_out()
+        
+        # 3. Очищаем данные в боте
+        del clients[current_account]
+        old_account = current_account
+        current_account = None
+        selected_chats.clear() # Очищаем выбранные чаты, так как они были привязаны к аккаунту
+        
+        await callback.message.answer(f"✅ Сессия `{old_account}` успешно завершена на сервере и удалена из бота!", reply_markup=main_menu())
+    except Exception as e:
+        # Резервный случай: если логаут не сработал (например сессия уже была дохлая), 
+        # просто удаляем файл вручную и чистим память
+        file_path = os.path.join(SESSIONS_DIR, f"{current_account}.session")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            
+        if current_account in clients:
+            del clients[current_account]
+            
+        current_account = None
+        selected_chats.clear()
+        await callback.message.answer(f"⚠️ Ошибка при мягком выходе, сессия удалена принудительно: {e}", reply_markup=main_menu())
 
 # ====================== ВЫБОР ИСКЛЮЧИТЕЛЬНО ГРУПП ======================
 @dp.callback_query(F.data == "show_chats")
@@ -310,7 +364,7 @@ async def process_pm_text(message: types.Message, state: FSMContext):
     
     # Кнопки выбора типа рассылки
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔁 С повтором (бесконечно)", callback_data="pm_mode:repeat")],
+        [InlineKeyboardButton(text="🔁 С повтором (беснонечно)", callback_data="pm_mode:repeat")],
         [InlineKeyboardButton(text="🛑 Без повтора (один раз)", callback_data="pm_mode:once")]
     ])
     await message.answer("⚙️ **Выберите тип рассылки пользователям:**", reply_markup=kb)
